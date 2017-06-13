@@ -26,13 +26,10 @@ module EncPeriod(
    input wire ticks,         // encoder transition signal
    input wire dir,           // direction of the ticks
    output wire ticks_en,     // edge signal 
-   output wire[31:0] latched, // latched counter from last encoder event
-   output wire[31:0] count    // number clk_fast periods per tick
+   output reg[21:0] latched, // latched counter from last encoder event
+   output reg[21:0] count,    // number clk_fast periods per tick
+   output reg dir_changed
 );
-
-    // local registers 
-    reg[21:0] cnter;        // cnter current value
-    reg[21:0] cnter_latch;  // latched cnter value
 
     // overflow value for unsigned 22-bit number
     parameter overflow = 22'h3FFFFF;
@@ -44,21 +41,17 @@ module EncPeriod(
 
 // convert ticks to pulse
 reg dir_r;      // dir start 
-reg dir_changed; //changed direction in this cycle
 reg ticks_r;    // previous ticks
 assign ticks_en = ticks & (~ticks_r);
-
-assign latched = {1, dir, dir_changed, 7'h00, cnter_latch};
-assign count = {0, dir, dir_changed, 7'h00, cnter};
 
 // latch cnter value 
 always @(posedge ticks_en or negedge reset)
 begin
     if (reset == 0) begin
-        cnter_latch <= 22'd0;
+        latched <= 22'd0;
     end
     else begin
-        cnter_latch <= cnter;
+        latched <= count;
     end
 end
 
@@ -66,15 +59,15 @@ end
 always @(posedge clk_fast or posedge ticks_en or negedge reset) 
 begin
    if (reset == 0 || ticks_en) begin
-      cnter <= 22'd0;
+      count <= 22'd0;
       dir_changed <= 0;
    end
    else if (dir != dir_r) begin
-      cnter <= overflow;
+      count <= overflow;
       dir_changed <= 1;
    end
-   else if (cnter != overflow) begin
-      cnter <= cnter + 1;   
+   else if (count != overflow) begin
+      count <= count + 1;   
    end
 end
 
@@ -99,22 +92,26 @@ module EncPeriodQuad(
     wire a_dn_tick;
     wire b_up_tick;
     wire b_dn_tick;
-    wire[31:0] a_up_latched;   // channel a up data 
-    wire[31:0] a_dn_latched;   // channel a dn data
-    wire[31:0] b_up_latched;   // channel b up data
-    wire[31:0] b_dn_latched;   // channel b dn latched_value
-    wire[31:0] a_up_counter;   // channel a up free running counter
-    wire[31:0] a_dn_counter;   // channel a dn free running counter
-    wire[31:0] b_up_counter;   // channel b up free running counter
-    wire[31:0] b_dn_counter;   // channel b dn free running counter
+    wire[21:0] a_up_latched;   // channel a up data 
+    wire[21:0] a_dn_latched;   // channel a dn data
+    wire[21:0] b_up_latched;   // channel b up data
+    wire[21:0] b_dn_latched;   // channel b dn latched_value
+    wire[21:0] a_up_counter;   // channel a up free running counter
+    wire[21:0] a_dn_counter;   // channel a dn free running counter
+    wire[21:0] b_up_counter;   // channel b up free running counter
+    wire[21:0] b_dn_counter;   // channel b dn free running counter
+    wire a_up_dir_changed;
+    wire a_dn_dir_changed;
+    wire b_up_dir_changed;
+    wire b_dn_dir_changed;
 
 //------------------------------------------------------------------------------
 // hardware description
 //
-EncPeriod EncPerUpA(clk_fast, reset,  a, dir, a_up_tick, a_up_latched, a_up_counter);
-EncPeriod EncPerDnA(clk_fast, reset, ~a, dir, a_dn_tick, a_dn_latched, a_dn_counter);
-EncPeriod EncPerUpB(clk_fast, reset,  b, dir, b_up_tick, b_up_latched, b_up_counter);
-EncPeriod EncPerDnB(clk_fast, reset, ~b, dir, b_dn_tick, b_dn_latched, b_dn_counter);
+EncPeriod EncPerUpA(clk_fast, reset,  a, dir, a_up_tick, a_up_latched, a_up_counter, a_up_dir_changed);
+EncPeriod EncPerDnA(clk_fast, reset, ~a, dir, a_dn_tick, a_dn_latched, a_dn_counter, a_dn_dir_changed);
+EncPeriod EncPerUpB(clk_fast, reset,  b, dir, b_up_tick, b_up_latched, b_up_counter, b_up_dir_changed);
+EncPeriod EncPerDnB(clk_fast, reset, ~b, dir, b_dn_tick, b_dn_latched, b_dn_counter, b_dn_dir_changed);
 
 localparam[1:0] a_up = 2'b00;
 localparam[1:0] a_dn = 2'b01;
@@ -148,50 +145,50 @@ always @(posedge clk_fast or negedge reset) begin
    end
    
    else if (mux == a_up) begin  // A up
-      if ((dir == 0) && (~b_up_counter[29]) && (b_up_counter[21:0] > a_up_latched[21:0])) begin
-         period <= {b_up_counter[31:29], b_up, 2'b01, b_up_counter[24:0]};
+      if ((dir == 0) && ~b_up_dir_changed && (b_up_counter[21:0] > a_up_latched[21:0])) begin
+         period <= {1'b0, dir, b_up_dir_changed, b_up, 5'b01000, b_up_counter};
       end 
-      else if ((dir == 1) && (~b_dn_counter[29]) && (b_dn_counter[21:0] > a_up_latched[21:0])) begin
-         period <= {b_dn_counter[31:29], b_dn, 2'b10, b_dn_counter[24:0]};
+      else if ((dir == 1) && ~b_dn_dir_changed && (b_dn_counter[21:0] > a_up_latched[21:0])) begin
+         period <= {1'b0, dir, b_dn_dir_changed, b_dn, 5'b10000, b_dn_counter};
       end 
       else begin
-         period <= {a_up_latched[31:29], a_up, 2'b11, a_up_latched[24:0]};
+         period <= {1'b1, dir, a_up_dir_changed, a_up, 5'b11000, a_up_latched};
       end
    end
    
    else if (mux == b_up) begin  // B up
-      if ((dir == 0) && (~a_dn_latched[29]) && (a_dn_counter[21:0] > b_up_latched[21:0])) begin
-         period <= {a_dn_counter[31:29], a_dn, 2'b01, a_dn_counter[24:0]};
+      if ((dir == 0) && ~a_dn_dir_changed && (a_dn_counter[21:0] > b_up_latched[21:0])) begin
+         period <= {1'b0, dir, a_up_dir_changed, a_dn, 5'b01000, a_dn_counter};
       end 
-      else if ((dir == 1) && (~a_up_counter[29] )&& (a_up_counter[21:0] > b_up_latched[21:0])) begin
-         period <= {a_up_counter[31:29], a_up, 2'b10, a_up_counter[24:0]};
+      else if ((dir == 1) && ~a_up_dir_changed && (a_up_counter[21:0] > b_up_latched[21:0])) begin
+         period <= {1'b0, dir, a_up_dir_changed, a_up, 5'b10000, a_up_counter};
       end 
       else begin
-         period <= {b_up_latched[31:29], b_up, 2'b11, b_up_latched[24:0]};
+         period <= {1'b1, dir, b_up_dir_changed, b_up, 5'b11000, b_up_latched};
       end
    end
    
    else if (mux == a_dn) begin  // A down
-      if ((dir == 0) && (~b_dn_latched[29]) && (b_dn_counter[21:0] > a_dn_latched[21:0])) begin
-         period <= {b_dn_counter[31:29], b_dn, 2'b01, b_dn_counter[24:0]};
+      if ((dir == 0) && ~b_dn_dir_changed && (b_dn_counter[21:0] > a_dn_latched[21:0])) begin
+         period <= {1'b0, dir, b_dn_dir_changed, b_dn, 5'b01000, b_dn_counter};
       end 
-      else if ((dir == 1) && (~b_up_counter[29]) && (b_up_counter[21:0] > a_dn_latched[21:0])) begin
-         period <= {b_up_counter[31:29], b_up, 2'b10, b_up_counter[24:0]};
+      else if ((dir == 1) && ~b_up_dir_changed && (b_up_counter[21:0] > a_dn_latched[21:0])) begin
+         period <= {1'b0, dir, b_up_dir_changed, b_up, 5'b10000, b_up_counter};
       end 
       else begin
-         period <= {a_dn_counter[31:29], a_dn, 2'b11, a_dn_counter[24:0]};
+         period <= {1'b1, dir, a_dn_dir_changed, a_dn, 5'b11000, a_dn_counter};
       end
    end
    
    else if (mux == b_dn) begin  // B down
-      if ((dir == 0) && (~a_up_counter[29]) && (a_up_counter[21:0] > b_dn_latched[21:0])) begin
-         period <= {a_up_counter[31:29], a_up, 2'b01, a_up_counter[24:0]};
+      if ((dir == 0) && ~a_up_dir_changed && (a_up_counter[21:0] > b_dn_latched[21:0])) begin
+         period <= {1'b0, dir, a_up_dir_changed, a_up, 5'b01000, a_up_counter};
       end 
-      else if ((dir == 1) && (~a_dn_counter[29]) && (a_dn_counter[21:0] > b_dn_latched[21:0])) begin
-         period <= {a_dn_counter[31:29], a_dn, 2'b10, a_dn_counter[24:0]};
+      else if ((dir == 1) && ~a_dn_dir_changed && (a_dn_counter[21:0] > b_dn_latched[21:0])) begin
+         period <= {1'b0, dir, a_dn_dir_changed, a_dn, 5'b10000, a_dn_counter};
       end
       else begin
-         period <= {b_dn_latched[31:29], b_dn, 2'b11, b_dn_latched[24:0]};
+         period <= {1'b1, dir, b_dn_dir_changed, b_dn, 5'b11000, b_dn_latched};
       end
    end
 end
